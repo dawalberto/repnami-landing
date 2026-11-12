@@ -1,0 +1,8 @@
+{
+  "name": "WorkoutLog landing",
+  "description": "Landing page oficial de WorkoutLog: planificador y ejecutor de rutinas de fuerza sin distracciones, cronómetro de descansos automático, tracking de 1RM y 100% offline.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

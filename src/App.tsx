@@ -1,0 +1,440 @@
+/**
+ * @license
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+import React, { useState } from 'react';
+import {
+  Routine,
+  ExerciseDefinition,
+  AppTab,
+  ExerciseRmLog,
+  WorkoutHistoryLog,
+  ExerciseDiary,
+  ActiveRestTimer,
+} from './types';
+import { RoutineList } from './components/RoutineList';
+import { RoutineView } from './components/RoutineView';
+import { RestTimerBar } from './components/RestTimerBar';
+import { ExerciseCatalog } from './components/ExerciseCatalog';
+import { RmLogsView } from './components/RmLogsView';
+import { WorkoutHistoryView } from './components/WorkoutHistoryView';
+import { ExerciseDiaryView } from './components/ExerciseDiaryView';
+import { SidebarMenu } from './components/SidebarMenu';
+import { RmRecordAlertModal } from './components/RmRecordAlertModal';
+import { PWAInstallBanner } from './components/PWAInstallBanner';
+import { DataBackupModal } from './components/DataBackupModal';
+import { WorkoutSummaryModal } from './components/WorkoutSummaryModal';
+import { AppHeader } from './components/AppHeader';
+import { AppLoadingScreen } from './components/AppLoadingScreen';
+import { ActiveWorkoutTopBanner } from './components/ActiveWorkoutTopBanner';
+import { ToastNotification } from './components/ToastNotification';
+import { BottomTabBar } from './components/BottomTabBar';
+import { getTotalDiaryEntriesCount } from './utils/diaryCalculations';
+import { useAppStorage } from './hooks/useAppStorage';
+import { useRoutines } from './hooks/useRoutines';
+import { useWorkoutSession } from './hooks/useWorkoutSession';
+import { useRmTracker } from './hooks/useRmTracker';
+import { useExerciseDiaryNavigation } from './hooks/useExerciseDiaryNavigation';
+import { LandingPage } from './components/landing/LandingPage';
+import { ArrowLeft } from 'lucide-react';
+
+export default function App() {
+  // Navigation & Modal Visibility
+  const [activeTab, setActiveTab] = useState<AppTab>(AppTab.ROUTINES);
+  const [isMenuOpen, setIsMenuOpen] = useState(false);
+  const [isBackupModalOpen, setIsBackupModalOpen] = useState(false);
+  const [feedbackMessage, setFeedbackMessage] = useState<string | null>(null);
+
+  // App vs Landing Page mode: Defaults to the new rich Landing Page!
+  const [isAppModeOpen, setIsAppModeOpen] = useState(() => {
+    try {
+      if (typeof window !== 'undefined') {
+        const isStandalone =
+          window.matchMedia('(display-mode: standalone)').matches ||
+          (window.navigator as unknown as { standalone?: boolean }).standalone === true;
+        const urlParams = new URLSearchParams(window.location.search);
+        return isStandalone || urlParams.get('app') === '1' || window.location.hash === '#app';
+      }
+    } catch {}
+    return false;
+  });
+
+  // Storage Layer (IndexedDB with automatic legacy localStorage migration)
+  const {
+    isStorageLoaded,
+    routines,
+    setRoutines,
+    catalog,
+    setCatalog,
+    activeSessions,
+    setActiveSessions,
+    rmLogs,
+    setRmLogs,
+    workoutHistory,
+    setWorkoutHistory,
+    exerciseDiary,
+    setExerciseDiary,
+    applyImportData,
+  } = useAppStorage();
+
+  // Routines & Catalog Domain Hook
+  const {
+    activeRoutineId,
+    routineSubMode,
+    activeRoutine,
+    createRoutine,
+    selectRoutine,
+    closeRoutine,
+    saveRoutine,
+    duplicateRoutine,
+    deleteRoutine,
+    createCatalogExercise,
+    updateCatalogExercise,
+    deleteCatalogExercise,
+  } = useRoutines({
+    routines,
+    setRoutines,
+    catalog,
+    setCatalog,
+    onNotify: setFeedbackMessage,
+  });
+
+  // Workout Session Lifecycle Hook
+  const {
+    workoutSummary,
+    startSession,
+    toggleSetComplete,
+    resetSession,
+    finishSession,
+    dismissWorkoutSummary,
+    deleteHistoryLog,
+    inProgressSessionEntry,
+    inProgressRoutine,
+  } = useWorkoutSession({
+    routines,
+    activeSessions,
+    setActiveSessions,
+    setWorkoutHistory,
+    activeRoutineId,
+  });
+
+  // Global Rest Timer state across routine training, diary, history & all tabs
+  const [activeRestTimer, setActiveRestTimer] = useState<ActiveRestTimer | null>(() => {
+    try {
+      const saved = sessionStorage.getItem('current_rest_timer');
+      if (saved) {
+        const parsed: ActiveRestTimer = JSON.parse(saved);
+        if (parsed.targetEndTime && parsed.targetEndTime > Date.now() - 60000) {
+          return parsed;
+        }
+      }
+    } catch {}
+    return null;
+  });
+
+  const handleStartRestTimer = (timer: ActiveRestTimer) => {
+    setActiveRestTimer(timer);
+    try {
+      sessionStorage.setItem('current_rest_timer', JSON.stringify(timer));
+    } catch {}
+  };
+
+  const handleCloseRestTimer = () => {
+    setActiveRestTimer(null);
+    try {
+      sessionStorage.removeItem('current_rest_timer');
+    } catch {}
+  };
+
+  const handleResetSession = (routineId: string) => {
+    resetSession(routineId);
+    handleCloseRestTimer();
+  };
+
+  const handleFinishSession = (summary: Parameters<typeof finishSession>[0]) => {
+    finishSession(summary);
+    handleCloseRestTimer();
+  };
+
+  // RM (Repetition Maximum) Tracker Hook
+  const {
+    pendingRmAlert,
+    checkRmWeight,
+    confirmRmAlert,
+    dismissRmAlert,
+  } = useRmTracker({
+    rmLogs,
+    setRmLogs,
+    onNotify: setFeedbackMessage,
+  });
+
+  // Exercise Diary Navigation Hook
+  const {
+    diaryTargetExerciseName,
+    diaryAutoOpenCreate,
+    openExerciseDiary,
+    clearDiaryNavigationState,
+  } = useExerciseDiaryNavigation({
+    exerciseDiary,
+    onNavigateToTab: setActiveTab,
+    onCloseActiveRoutine: closeRoutine,
+    onDismissWorkoutSummary: dismissWorkoutSummary,
+  });
+
+  // Handle data import from JSON backup
+  const handleImportComplete = (
+    newCatalog: ExerciseDefinition[],
+    newRoutines: Routine[],
+    newRmLogs: ExerciseRmLog[],
+    newWorkoutHistory: WorkoutHistoryLog[],
+    newExerciseDiary: ExerciseDiary[],
+    summary: {
+      exercisesAdded: number;
+      exercisesReplaced: number;
+      routinesAdded: number;
+      exercisesInRoutinesUpdated?: number;
+      rmLogsAdded?: number;
+      rmLogsUpdated?: number;
+      historyAdded?: number;
+      diaryAdded?: number;
+      diaryUpdated?: number;
+      mode: 'merge' | 'overwrite';
+    }
+  ) => {
+    applyImportData(newCatalog, newRoutines, newRmLogs, newWorkoutHistory, newExerciseDiary);
+
+    let msg = '';
+    if (summary.mode === 'overwrite') {
+      const totalNotes = newExerciseDiary.reduce((sum, d) => sum + (d.entries?.length || 0), 0);
+      msg = `Copia restaurada: ${newCatalog.length} ejercicios, ${newRoutines.length} rutinas, ${newRmLogs.length} RMs, ${newWorkoutHistory.length} sesiones y ${totalNotes} notas de diario.`;
+    } else {
+      const parts: string[] = [];
+      if (summary.exercisesAdded > 0) parts.push(`${summary.exercisesAdded} ejerc. añadidos`);
+      if (summary.exercisesReplaced > 0) parts.push(`${summary.exercisesReplaced} ejerc. actualizados`);
+      if (summary.exercisesInRoutinesUpdated && summary.exercisesInRoutinesUpdated > 0) {
+        parts.push(`${summary.exercisesInRoutinesUpdated} en rutinas`);
+      }
+      if (summary.routinesAdded > 0) parts.push(`${summary.routinesAdded} rutinas añadidas`);
+      if (summary.rmLogsAdded && summary.rmLogsAdded > 0) parts.push(`${summary.rmLogsAdded} RMs añadidos`);
+      if (summary.rmLogsUpdated && summary.rmLogsUpdated > 0) parts.push(`${summary.rmLogsUpdated} RMs actualizados`);
+      if (summary.historyAdded && summary.historyAdded > 0) parts.push(`${summary.historyAdded} sesiones añadidas`);
+      if (summary.diaryAdded && summary.diaryAdded > 0) parts.push(`${summary.diaryAdded} entradas diario añadidas`);
+      if (summary.diaryUpdated && summary.diaryUpdated > 0) parts.push(`${summary.diaryUpdated} entradas diario actualizadas`);
+      msg = parts.length > 0
+        ? `Importación completada: ${parts.join(', ')}.`
+        : 'Datos combinados con éxito.';
+    }
+    setFeedbackMessage(msg);
+  };
+
+  // Reset scroll to top when changing tabs
+  React.useEffect(() => {
+    window.scrollTo({ top: 0, left: 0, behavior: 'instant' });
+  }, [activeTab]);
+
+  // Wait for IndexedDB hydration before rendering the view to avoid state flash
+  // If user is viewing the landing page (default)
+  if (!isAppModeOpen) {
+    return <LandingPage onOpenApp={() => setIsAppModeOpen(true)} />;
+  }
+
+  return (
+    <div className="min-h-screen bg-[#0D0D0D] text-white font-sans antialiased selection:bg-[#00FF87] selection:text-black">
+      {/* Top Bar to Return to Landing Page */}
+      <div className="sticky top-0 z-40 bg-zinc-950/95 backdrop-blur border-b border-white/10 px-4 py-2 flex items-center justify-between text-xs">
+        <button
+          onClick={() => {
+            setIsAppModeOpen(false);
+            window.scrollTo({ top: 0, behavior: 'smooth' });
+          }}
+          className="inline-flex items-center gap-1.5 text-zinc-300 hover:text-[#00FF87] font-bold transition-colors py-1 px-2.5 rounded-lg bg-zinc-900 border border-white/10 hover:border-[#00FF87]/30"
+        >
+          <ArrowLeft className="w-3.5 h-3.5" />
+          <span>← Volver a la Landing Page</span>
+        </button>
+        <span className="font-mono text-[11px] text-[#00FF87] font-semibold hidden sm:inline">
+          Modo Aplicación Activo
+        </span>
+      </div>
+      {activeRoutineId && activeRoutine ? (
+        <RoutineView
+          routine={activeRoutine}
+          catalog={catalog}
+          rmLogs={rmLogs}
+          exerciseDiary={exerciseDiary}
+          initialMode={routineSubMode}
+          session={activeSessions[activeRoutine.id]}
+          activeRestTimer={activeRestTimer}
+          onSaveRoutine={saveRoutine}
+          onSaveToCatalog={createCatalogExercise}
+          onBack={() => {
+            closeRoutine();
+            window.scrollTo({ top: 0, left: 0, behavior: 'instant' });
+          }}
+          onStartSession={startSession}
+          onToggleSetComplete={toggleSetComplete}
+          onResetSession={handleResetSession}
+          onFinishSession={handleFinishSession}
+          onCheckRmWeight={checkRmWeight}
+          onOpenDiary={openExerciseDiary}
+          onStartRestTimer={handleStartRestTimer}
+          onCloseRestTimer={handleCloseRestTimer}
+        />
+      ) : (
+        <div className="flex flex-col min-h-screen pb-16">
+          <AppHeader
+            activeTab={activeTab}
+            onSelectTab={setActiveTab}
+            routinesCount={routines.length}
+            catalogCount={catalog.length}
+            onOpenMenu={() => setIsMenuOpen(true)}
+          />
+
+          {inProgressSessionEntry && inProgressRoutine && (
+            <ActiveWorkoutTopBanner
+              routine={inProgressRoutine}
+              session={inProgressSessionEntry}
+              onOpenRoutine={() => selectRoutine(inProgressRoutine.id, 'execute')}
+            />
+          )}
+
+          <PWAInstallBanner />
+
+          <main className="flex-1 pb-6">
+            {activeTab === AppTab.ROUTINES ? (
+              <RoutineList
+                routines={routines}
+                activeSessions={activeSessions}
+                onCreateRoutine={createRoutine}
+                onSelectRoutine={selectRoutine}
+                onDuplicateRoutine={duplicateRoutine}
+                onDeleteRoutine={(id) => deleteRoutine(id, handleResetSession)}
+              />
+            ) : activeTab === AppTab.EXERCISES ? (
+              <ExerciseCatalog
+                exercises={catalog}
+                rmLogs={rmLogs}
+                exerciseDiary={exerciseDiary}
+                onCreateExercise={createCatalogExercise}
+                onUpdateExercise={updateCatalogExercise}
+                onDeleteExercise={deleteCatalogExercise}
+                onCheckRmWeight={checkRmWeight}
+                onOpenDiary={openExerciseDiary}
+              />
+            ) : activeTab === AppTab.RMS ? (
+              <RmLogsView
+                catalog={catalog}
+                rmLogs={rmLogs}
+                onSaveRmLogs={setRmLogs}
+                onGoToCatalog={() => setActiveTab(AppTab.EXERCISES)}
+              />
+            ) : activeTab === AppTab.HISTORY ? (
+              <WorkoutHistoryView
+                historyLogs={workoutHistory}
+                rmLogs={rmLogs}
+                routines={routines}
+                catalog={catalog}
+                onDeleteLog={deleteHistoryLog}
+                onGoToRoutines={() => setActiveTab(AppTab.ROUTINES)}
+              />
+            ) : (
+              <ExerciseDiaryView
+                catalog={catalog}
+                diaries={exerciseDiary}
+                onSaveDiaries={setExerciseDiary}
+                onGoToCatalog={() => setActiveTab(AppTab.EXERCISES)}
+                initialExerciseName={diaryTargetExerciseName}
+                autoOpenCreate={diaryAutoOpenCreate}
+                onClearInitialState={clearDiaryNavigationState}
+              />
+            )}
+          </main>
+
+          {/* Bottom Tab Bar */}
+          <BottomTabBar
+            activeTab={activeTab}
+            onSelectTab={setActiveTab}
+            routinesCount={routines.length}
+            catalogCount={catalog.length}
+            rmCount={rmLogs.length}
+            historyCount={workoutHistory.length}
+            diaryCount={getTotalDiaryEntriesCount(exerciseDiary)}
+          />
+        </div>
+      )}
+
+      {/* Sidebar Navigation Drawer */}
+      <SidebarMenu
+        isOpen={isMenuOpen}
+        onClose={() => setIsMenuOpen(false)}
+        activeTab={activeTab}
+        onSelectTab={setActiveTab}
+        routinesCount={routines.length}
+        catalogCount={catalog.length}
+        rmCount={rmLogs.length}
+        historyCount={workoutHistory.length}
+        diaryCount={getTotalDiaryEntriesCount(exerciseDiary)}
+        onOpenBackup={() => setIsBackupModalOpen(true)}
+      />
+
+      {/* RM New Record Detection Alert Modal */}
+      <RmRecordAlertModal
+        isOpen={Boolean(pendingRmAlert)}
+        exerciseName={pendingRmAlert?.exerciseName || ''}
+        newWeight={pendingRmAlert?.newWeight || 0}
+        previousRmWeight={pendingRmAlert?.previousRmWeight || 0}
+        previousRmDate={pendingRmAlert?.previousRmDate}
+        onConfirm={confirmRmAlert}
+        onClose={dismissRmAlert}
+      />
+
+      {/* Workout Completion Summary Modal */}
+      <WorkoutSummaryModal
+        summary={workoutSummary}
+        rmLogs={rmLogs}
+        exerciseDiary={exerciseDiary}
+        routines={routines}
+        catalog={catalog}
+        onOpenDiary={openExerciseDiary}
+        onClose={dismissWorkoutSummary}
+      />
+
+      {/* Import / Export JSON Backup Modal */}
+      <DataBackupModal
+        isOpen={isBackupModalOpen}
+        onClose={() => setIsBackupModalOpen(false)}
+        catalog={catalog}
+        routines={routines}
+        rmLogs={rmLogs}
+        workoutHistory={workoutHistory}
+        exerciseDiary={exerciseDiary}
+        onImportComplete={handleImportComplete}
+      />
+
+      {/* Floating Rest Timer Bar across entire app (RoutineView, Diary, History, etc.) */}
+      {activeRestTimer && (
+        <RestTimerBar
+          key={activeRestTimer.key || activeRestTimer.routineId}
+          initialSeconds={activeRestTimer.initialSeconds}
+          targetEndTime={activeRestTimer.targetEndTime}
+          exerciseName={activeRestTimer.exerciseName}
+          setNumber={activeRestTimer.setNumber}
+          isInsideActiveRoutine={Boolean(activeRoutineId)}
+          onReturnToRoutine={
+            !activeRoutineId
+              ? () => selectRoutine(activeRestTimer.routineId, 'execute')
+              : undefined
+          }
+          onClose={handleCloseRestTimer}
+        />
+      )}
+
+      {/* Floating Feedback Toast Notification */}
+      <ToastNotification
+        message={feedbackMessage}
+        onClose={() => setFeedbackMessage(null)}
+      />
+    </div>
+  );
+}
