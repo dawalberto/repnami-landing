@@ -6,11 +6,12 @@ const APP = 'https://dawalberto.github.io/workoutlog/';
 const featureIcons = [Dumbbell, Timer, BarChart3, NotebookPen];
 const dataIcons = [WifiOff, Cloud, History];
 function App() {
- const [language, setLanguage] = useState<Language>(initialLanguage);
+ const [language, setLanguage] = useState<Language>('es');
+ useEffect(() => { setLanguage(initialLanguage()); }, []);
  const t = copy[language];
  useEffect(() => {
    document.documentElement.lang = language;
-   document.title = `RepNami — ${t.eyebrow}`;
+   document.title = language === 'es' ? 'RepNami: app gratis para registrar entrenamientos' : `RepNami — ${t.eyebrow}`;
    document.querySelector('meta[name="description"]')?.setAttribute('content', t.description);
  }, [language, t]);
  const changeLanguage = (value: Language) => {
